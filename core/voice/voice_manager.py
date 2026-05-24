@@ -8,6 +8,7 @@ if TYPE_CHECKING:
 
 class VoiceManager:
     DEFAULT_STT_MODEL = Path("models/whisper-tiny-q4_0.gguf")
+    REMOTE_WHISPER_MODEL = "tiny.en"
 
     def __init__(self, wake_word: str = "Thalexa", stt_model: str | Path | None = None):
         self.wake_word = wake_word
@@ -15,6 +16,7 @@ class VoiceManager:
         self.available, self.missing = self._detect_runtime()
         self.vad_available = any(util.find_spec(pkg) for pkg in ["silero_vad"])
         self._speech_model = None
+        self._speech_model_type = None
         self._vad_model = None
         self._silero_vad = None
 
@@ -39,7 +41,11 @@ class VoiceManager:
                 print(f"Speech transcription model not found: {self.stt_model}")
                 print("Download a Whisper GGUF model and place it at this path, or update the path in the voice manager.")
             elif self.stt_model.suffix.lower() == ".gguf":
-                if not any(util.find_spec(pkg) for pkg in ["whisper_cpp", "whispercpp"]):
+                if self._has_whispercpp_runtime():
+                    print(
+                        f"Local GGUF model path detected. Using whispercpp fallback model '{self.WHISPERCPP_FALLBACK_MODEL}' for transcription."
+                    )
+                else:
                     print("Local GGUF model support requires a Whisper C++ runtime package such as whisper_cpp or whispercpp.")
             if self.vad_available:
                 print("Voice activity detection is available via silero-vad.")
@@ -56,40 +62,65 @@ class VoiceManager:
         print(" - piper or another TTS runtime")
         return False
 
+    def _has_faster_whisper_runtime(self) -> bool:
+        return util.find_spec("faster_whisper") is not None
+
+    def _can_load_transcription_model(self) -> bool:
+        if not self._has_faster_whisper_runtime():
+            return False
+
+        if self.stt_model.exists() and self.stt_model.is_dir():
+            return True
+
+        if self.stt_model.suffix.lower() == ".gguf":
+            return True
+
+        return False
+
     def _load_speech_model(self):
         if self._speech_model is not None:
             return self._speech_model
 
-        if not self.stt_model.exists():
+        if not self._can_load_transcription_model():
             return None
 
-        if self.stt_model.suffix.lower() == ".gguf":
+        if self.stt_model.exists() and self.stt_model.is_dir():
             try:
-                import whisper_cpp as wc
+                from faster_whisper import WhisperModel
             except ImportError:
-                try:
-                    import whispercpp as wc
-                except ImportError:
-                    print(
-                        "Local GGUF model paths require a Whisper C++ runtime package such as `whisper_cpp` or `whispercpp`."
-                    )
-                    return None
-
-            try:
-                self._speech_model = wc.WhisperModel(str(self.stt_model))
-                return self._speech_model
-            except Exception as exc:
-                print(f"Failed to load GGUF model with Whisper C++ binding: {exc}")
                 return None
 
-        try:
-            from faster_whisper import WhisperModel
-        except ImportError:
-            return None
+            try:
+                self._speech_model = WhisperModel(str(self.stt_model), device="cpu", compute_type="int8")
+                self._speech_model_type = "faster_whisper"
+                return self._speech_model
+            except Exception as exc:
+                print(f"Failed to load converted Whisper model directory: {exc}")
+                return None
 
-        if self.stt_model.is_dir():
-            self._speech_model = WhisperModel(str(self.stt_model), device="cpu", compute_type="int8")
-            return self._speech_model
+        if self.stt_model.suffix.lower() == ".gguf":
+            print(
+                "Local GGUF model path is present, but it is not directly supported by faster-whisper."
+            )
+            print(
+                f"Falling back to remote Whisper model '{self.REMOTE_WHISPER_MODEL}' for transcription."
+            )
+            try:
+                from faster_whisper import WhisperModel
+            except ImportError:
+                return None
+
+            try:
+                self._speech_model = WhisperModel(
+                    self.REMOTE_WHISPER_MODEL,
+                    device="cpu",
+                    compute_type="int8",
+                )
+                self._speech_model_type = "faster_whisper"
+                return self._speech_model
+            except Exception as exc:
+                print(f"Failed to load remote Whisper fallback model: {exc}")
+                return None
 
         return None
 
@@ -154,10 +185,7 @@ class VoiceManager:
         if not self.stt_model.exists():
             return False
 
-        if self.stt_model.suffix.lower() == ".gguf":
-            return any(util.find_spec(pkg) for pkg in ["whisper_cpp", "whispercpp"])
-
-        return self.stt_model.is_dir()
+        return self._can_load_transcription_model()
 
     def test_wake_cycle(self) -> None:
         print(f"Wake word configured: {self.wake_word}")
@@ -185,6 +213,15 @@ class VoiceManager:
         model = self._load_speech_model()
         if model is None:
             return None
+
+        if self._speech_model_type == "whispercpp":
+            try:
+                import numpy as np
+            except ImportError:
+                return None
+
+            audio_np = np.asarray(audio, dtype="float32")
+            return model.transcribe(audio_np)
 
         result = model.transcribe(audio, beam_size=5, language="en")
         segments = result[0] if isinstance(result, tuple) else getattr(result, "segments", [])
