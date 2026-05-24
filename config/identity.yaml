@@ -1,0 +1,23 @@
+primary_name: Gugu CEO
+
+aliases:
+  - Emmy Pencil
+  - Boss
+  - My Love
+
+recognition:
+  use_context: true
+
+responses:
+
+  Gugu CEO:
+    mode: leadership
+
+  Emmy Pencil:
+    mode: creative
+
+  Boss:
+    mode: execution
+
+  My Love:
+    mode: companion

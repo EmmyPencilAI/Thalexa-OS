@@ -1,0 +1,4 @@
+local_models:
+  phi_3_mini: models/Phi-3-mini-4k-instruct-q4.gguf
+  qwen2_5_coder: models/Qwen2.5-Coder-1.5B-Q3_K_M.gguf
+  nomic_embed_text: models/nomic-embed-text-v1.5.Q4_K_M.gguf
